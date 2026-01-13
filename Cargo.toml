@@ -1,7 +1,12 @@
 [package]
 name = "misaki-rs"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+license = "MIT"
+description = "A self-contained, POS-aware Grapheme-to-Phoneme (G2P) engine for Rust, optimized for TTS models like Kokoro."
+homepage = "https://github.com/MicheleYin/misaki-rs"
+repository = "https://github.com/MicheleYin/misaki-rs"
+readme = "README.md"
 
 [dependencies]
 regex = "1.10"
