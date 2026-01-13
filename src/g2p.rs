@@ -151,7 +151,7 @@ impl G2P {
     }
 
     fn is_number(&self, word: &str) -> bool {
-        word.chars().all(|c| c.is_digit(10) || c == ',' || c == '.')
+        word.chars().any(|c| c.is_digit(10)) && word.chars().all(|c| c.is_digit(10) || c == ',' || c == '.')
     }
 
     fn convert_number(&self, word: &str) -> String {
