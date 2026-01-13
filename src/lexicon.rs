@@ -122,9 +122,11 @@ impl Lexicon {
 
         // Special NNP handling if not found or no primary stress
         if ps.is_none() || (is_nnp && !ps.as_ref()?.contains('ˈ')) {
-            if let Some((nnp_ps, nnp_rating)) = self.get_nnp(&current_word) {
-                ps = Some(nnp_ps);
-                rating = nnp_rating;
+            if is_nnp {
+                if let Some((nnp_ps, nnp_rating)) = self.get_nnp(&current_word) {
+                    ps = Some(nnp_ps);
+                    rating = nnp_rating;
+                }
             }
         }
 
@@ -202,7 +204,7 @@ impl Lexicon {
         }
 
         for (si, vi) in stresses {
-            let (s_pos, s_char) = parts[si];
+            let (_s_pos, s_char) = parts[si];
             parts[si] = (parts[vi].0 - 0.5, s_char);
         }
 

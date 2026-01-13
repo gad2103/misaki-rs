@@ -58,11 +58,6 @@ impl G2P {
         tokens
     }
 
-    fn subtokenize(&self, word: &str) -> Vec<String> {
-        self.subtoken_regex.find_iter(word)
-            .filter_map(|m| m.ok().map(|mat| mat.as_str().to_string()))
-            .collect()
-    }
 
     pub fn g2p(&self, text: &str) -> (String, Vec<MToken>) {
         let (processed_text, _, _) = self.preprocess(text);
