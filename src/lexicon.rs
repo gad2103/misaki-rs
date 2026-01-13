@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use crate::token::MToken;
 use crate::data;
+use crate::language::Language;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -11,25 +12,25 @@ pub enum PhonemeEntry {
 }
 
 pub struct Lexicon {
-    pub british: bool,
+    pub lang: Language,
     pub cap_stresses: (f64, f64),
     pub golds: HashMap<String, PhonemeEntry>,
     pub silvers: HashMap<String, PhonemeEntry>,
 }
 
 impl Lexicon {
-    pub fn new(british: bool) -> Self {
-        let (golds_raw, silvers_raw) = if british {
-            (data::load_gb_gold(), data::load_gb_silver())
-        } else {
-            (data::load_us_gold(), data::load_us_silver())
+    pub fn new(lang: Language) -> Self {
+        let (golds_raw, silvers_raw) = match lang {
+            Language::EnglishGB => (data::load_gb_gold(), data::load_gb_silver()),
+            Language::EnglishUS => (data::load_us_gold(), data::load_us_silver()),
+            // Language::Italian => (data::load_it_gold(), data::load_it_silver()),
         };
 
         let golds = Lexicon::grow_dictionary(golds_raw);
         let silvers = Lexicon::grow_dictionary(silvers_raw);
 
         Self {
-            british,
+            lang,
             cap_stresses: (0.5, 2.0),
             golds,
             silvers,
@@ -220,14 +221,15 @@ impl Lexicon {
 
     // Stemming logic
     pub fn stem_s(&self, word: &str, tag: &str, stress: Option<f64>) -> Option<(String, i32)> {
-        if word.len() < 3 || !word.ends_with('s') { return None; }
+        let lower = word.to_lowercase();
+        if lower.len() < 3 || !lower.ends_with('s') { return None; }
         
-        let stem = if !word.ends_with("ss") && self.is_known(&word[..word.len()-1], tag) {
-            &word[..word.len()-1]
-        } else if (word.ends_with("'s") || (word.len() > 4 && word.ends_with("es") && !word.ends_with("ies"))) && self.is_known(&word[..word.len()-2], tag) {
-            &word[..word.len()-2]
-        } else if word.len() > 4 && word.ends_with("ies") && self.is_known(&(word[..word.len()-3].to_string() + "y"), tag) {
-            &(word[..word.len()-3].to_string() + "y")
+        let stem = if !lower.ends_with("ss") && self.is_known(&lower[..lower.len()-1], tag) {
+            &lower[..lower.len()-1]
+        } else if (lower.ends_with("'s") || (lower.len() > 4 && lower.ends_with("es") && !lower.ends_with("ies"))) && self.is_known(&lower[..lower.len()-2], tag) {
+            &lower[..lower.len()-2]
+        } else if lower.len() > 4 && lower.ends_with("ies") && self.is_known(&(lower[..lower.len()-3].to_string() + "y"), tag) {
+            &(lower[..lower.len()-3].to_string() + "y")
         } else {
             return None;
         };
@@ -249,11 +251,12 @@ impl Lexicon {
     }
 
     pub fn stem_ed(&self, word: &str, tag: &str, stress: Option<f64>) -> Option<(String, i32)> {
-        if word.len() < 4 || !word.ends_with('d') { return None; }
-        let stem = if !word.ends_with("dd") && self.is_known(&word[..word.len()-1], tag) {
-             &word[..word.len()-1]
-        } else if word.len() > 4 && word.ends_with("ed") && !word.ends_with("eed") && self.is_known(&word[..word.len()-2], tag) {
-             &word[..word.len()-2]
+        let lower = word.to_lowercase();
+        if lower.len() < 4 || !lower.ends_with('d') { return None; }
+        let stem = if !lower.ends_with("dd") && self.is_known(&lower[..lower.len()-1], tag) {
+             &lower[..lower.len()-1]
+        } else if lower.len() > 4 && lower.ends_with("ed") && !lower.ends_with("eed") && self.is_known(&lower[..lower.len()-2], tag) {
+             &lower[..lower.len()-2]
         } else {
             return None;
         };
@@ -277,19 +280,21 @@ impl Lexicon {
     }
 
     pub fn stem_ing(&self, word: &str, tag: &str, stress: Option<f64>) -> Option<(String, i32)> {
-        if word.len() < 5 || !word.ends_with("ing") { return None; }
+        let lower = word.to_lowercase();
+        if lower.len() < 5 || !lower.ends_with("ing") { return None; }
         
-        let stem = if word.len() > 5 && self.is_known(&word[..word.len()-3], tag) {
-            word[..word.len()-3].to_string()
-        } else if self.is_known(&(word[..word.len()-3].to_string() + "e"), tag) {
-            word[..word.len()-3].to_string() + "e"
-        } else if word.len() > 5 && self.is_known(&word[..word.len()-4], tag) {
+        let stem = if lower.len() > 5 && self.is_known(&lower[..lower.len()-3], tag) {
+            lower[..lower.len()-3].to_string()
+        } else if self.is_known(&(lower[..lower.len()-3].to_string() + "e"), tag) {
+            lower[..lower.len()-3].to_string() + "e"
+        } else if lower.len() > 5 && self.is_known(&lower[..lower.len()-4], tag) {
             // Simplified: python regex checks for doubled consonants
-            word[..word.len()-4].to_string()
+            lower[..lower.len()-4].to_string()
         } else {
             return None;
         };
 
+        // Note: lookup handles string, so we pass current stem string (which is lowercased).
         let (stem_ps, rating) = self.lookup(&stem, tag, stress)?;
         Some((format!("{}ɪŋ", stem_ps), rating))
     }

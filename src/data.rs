@@ -21,3 +21,13 @@ pub fn load_gb_silver() -> HashMap<String, PhonemeEntry> {
     let data = include_str!("../data/gb_silver.json");
     serde_json::from_str(data).expect("Failed to parse gb_silver.json")
 }
+
+// pub fn load_it_gold() -> HashMap<String, PhonemeEntry> {
+//     let data = include_str!("../data/it_gold.json");
+//     serde_json::from_str(data).expect("Failed to parse it_gold.json")
+// }
+
+// pub fn load_it_silver() -> HashMap<String, PhonemeEntry> {
+//     let data = include_str!("../data/it_silver.json");
+//     serde_json::from_str(data).expect("Failed to parse it_silver.json")
+// }
