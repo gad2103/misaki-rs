@@ -9,8 +9,12 @@ It is specifically designed for use with TTS models like **Kokoro**, providing a
 - **Self-Contained**: All lexicons, dictionaries, and Part-of-Speech tagger weights are embedded directly into the binary at compile time. No external resource files are required at runtime.
 - **POS-Aware Phonemization**: Uses an averaged perceptron tagger to handle heteronyms (words with different pronunciations based on context, e.g., *object* as a noun vs. verb).
 - **Multi-Dialect Support**: Supports both **US English** (en-us) and **British English** (en-gb).
-- **Morphological Stemming**: Intelligent handling of suffixes (plurals, past tense, continuous tense).
+- **Morphological Stemming**: Intelligent handling of suffixes (plurals, past tense, continuous tense). Other rules may be added in the future. Currently those are:
+    -  s plural stemming
+    - ed past tense stemming
+    - ing continuous tense stemming
 - **Number Conversion**: Automatically converts numeric values into their spoken word equivalents.
+
 
 ## Installation
 
@@ -39,6 +43,10 @@ fn main() {
     println!("GB Phonemes: {}", phonemes_gb);
 }
 ```
+
+## Pronunciations
+
+The original misaki project had very few words and some were not pronunced correctly. Here I updated the original pronunciation dict to include more words and correct pronunciations using eSpeak.
 
 ## Scope
 

@@ -14,16 +14,16 @@ pub struct G2P {
 
 impl G2P {
     pub fn new(british: bool) -> Self {
-        // Regex for subtokenization roughly matching the Python version
+        // Regex for subtokenization with better UTF-8 support using Unicode properties
         let subtoken_regex = Regex::new(r"(?x)
             ^['‘’]+ |
-            [[:upper:]](?=[[:upper:]][[:lower:]]) |
+            \p{Lu}(?=\p{Lu}\p{Ll}) |
             (?:^-)?(?:\d?[,.]?\d)+ |
             [-_]+ |
             ['‘’]{2,} |
-            [[:alpha:]]*?(?:['‘’][[:alpha:]])*?[[:lower:]](?=[[:upper:]]) |
-            [[:alpha:]]+(?:['‘’][[:alpha:]])* |
-            [^- _ [[:alpha:]] '‘’ \d] |
+            \p{L}*?(?:[-'‘’]\p{L})*?\p{Ll}(?=\p{Lu}) |
+            \p{L}+(?:[-'‘’]\p{L})* |
+            [^- _ \p{L} '‘’ \d] |
             ['‘’]+$
         ").unwrap();
 
@@ -68,11 +68,14 @@ impl G2P {
         let words: Vec<&str> = words_owned.iter().map(|s| s.as_str()).collect();
         let tags = self.tagger.tag(&words);
 
+        eprintln!("DEBUG: g2p '{}' -> {} tokens, {} tags", text, tokens.len(), tags.len());
+
         for (tk, tag) in tokens.iter_mut().zip(tags.into_iter()) {
             tk.tag = tag.tag;
             if tk.phonemes.is_none() {
                 let word = tk.text.clone();
                 let tag = tk.tag.clone();
+                eprintln!("DEBUG: processing token '{}' with tag '{}'", word, tag);
                 
                 // Try dictionary lookup
                 if let Some((ps, _)) = self.lexicon.lookup(&word, &tag, None) {
@@ -83,11 +86,59 @@ impl G2P {
                     tk.phonemes = Some(ps);
                 } else if let Some((ps, _)) = self.lexicon.stem_ing(&word, &tag, None) {
                     tk.phonemes = Some(ps);
+                } else if word.contains('-') && word.len() > 1 {
+                    // Handle hyphenated words like "twenty-one"
+                    let parts: Vec<&str> = word.split('-').filter(|s| !s.is_empty()).collect();
+                    let mut sub_ps = Vec::new();
+                    for part in parts {
+                        let (p, _) = self.g2p(part);
+                        sub_ps.push(p);
+                    }
+                    tk.phonemes = Some(sub_ps.join(" "));
                 } else if self.is_number(&word) {
-                    tk.phonemes = Some(self.convert_number(&word));
+                    let spoken = self.convert_number(&word);
+                    let (p, _) = self.g2p(&spoken);
+                    tk.phonemes = Some(p);
+                } else if word.chars().count() > 1 {
+                    // Try character-by-character if the whole word is unknown
+                    let mut char_ps = Vec::new();
+                    for c in word.chars() {
+                        let (p, _) = self.g2p(&c.to_string());
+                        char_ps.push(p);
+                    }
+                    tk.phonemes = Some(char_ps.join(" "));
                 } else {
-                    // Final fallback to characters or unknown
-                    tk.phonemes = Some(self.unk.clone());
+                    // Try to normalize the character or return unknown
+                    let normalized: String = word.chars()
+                        .map(|c| match c {
+                            'é' | 'è' | 'ê' | 'ë' => 'e',
+                            'á' | 'à' | 'â' | 'ä' | 'ã' | 'å' => 'a',
+                            'í' | 'ì' | 'î' | 'ï' => 'i',
+                            'ó' | 'ò' | 'ô' | 'ö' | 'õ' => 'o',
+                            'ú' | 'ù' | 'û' | 'ü' => 'u',
+                            'ñ' => 'n',
+                            'ç' => 'c',
+                            '—' | '–' => ' ', // map dashes to spaces
+                            _ => c,
+                        })
+                        .collect();
+                    
+                    if normalized != word {
+                        let (p, _) = self.g2p(&normalized);
+                        tk.phonemes = Some(p);
+                    } else {
+                        // Handle standard punctuation and symbols gracefully
+                        if word.chars().count() == 1 {
+                            let c = word.chars().next().unwrap();
+                            if c.is_ascii_punctuation() || "—–…".contains(c) {
+                                tk.phonemes = Some(" ".to_string());
+                            } else {
+                                tk.phonemes = Some(self.unk.clone());
+                            }
+                        } else {
+                            tk.phonemes = Some(self.unk.clone());
+                        }
+                    }
                 }
             }
         }

@@ -108,16 +108,22 @@ impl Lexicon {
         let mut ps = None;
         let mut rating = 0;
 
-        if let Some(entry) = self.golds.get(&current_word) {
-            ps = self.resolve_phonemes(entry, tag);
-            rating = 4;
-        }
+        // println!("DEBUG: lookup '{}', dictionary size: {}", word, self.golds.len());
 
-        if ps.is_none() && !is_nnp {
-            if let Some(entry) = self.silvers.get(&current_word) {
+        if let Some(entry) = self.golds.get(&current_word).or_else(|| self.golds.get(&current_word.to_lowercase())) {
                 ps = self.resolve_phonemes(entry, tag);
-                rating = 3;
+                rating = 4;
             }
+    
+            if ps.is_none() && !is_nnp {
+                if let Some(entry) = self.silvers.get(&current_word).or_else(|| self.silvers.get(&current_word.to_lowercase())) {
+                    ps = self.resolve_phonemes(entry, tag);
+                    rating = 3;
+                }
+            }
+
+        if ps.is_none() && (word == "three" || word == "one") {
+            eprintln!("DEBUG: lookup '{}', dictionary size: {}, contains 'three': {}", word, self.golds.len(), self.golds.contains_key("three"));
         }
 
         // Special NNP handling if not found or no primary stress
