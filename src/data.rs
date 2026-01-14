@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use serde_json;
 use crate::lexicon::PhonemeEntry;
+use serde_json;
+use std::collections::HashMap;
 
 pub fn load_us_gold() -> HashMap<String, PhonemeEntry> {
     let data = include_str!("../data/us_gold.json");

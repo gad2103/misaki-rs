@@ -24,8 +24,8 @@ impl G2P {
             (?:^-)?(?:\d?[,.]?\d)+ |
             [\-_]+ |
             ['‘’]{2,} |
-            \p{L}+(?:[\-'‘’]\p{L})* |
-            [^\s\-_0-9\p{L}'‘’] |
+            \p{L}+(?:[''']\p{L}+)* |
+            [^\s\-_0-9\p{L}''] |
             ['‘’]+$
         ",
         )
@@ -57,12 +57,38 @@ impl G2P {
     }
 
     pub fn tokenize(&self, text: &str) -> Vec<MToken> {
+        // Use language-tokenizer for word boundary detection (like spaCy in Python)
+        // However, language-tokenizer with snowball does stemming, so we need to extract original text
+        // Strategy: Use a simple word splitter that handles contractions, then apply subtokenization
+        // Python uses spaCy which preserves original text, then applies subtokenize later
+
+        // Simple word splitting that handles contractions: split on whitespace and punctuation
+        // but keep contractions together
+        let word_boundary_regex = Regex::new(r"\S+").unwrap();
         let mut tokens = Vec::new();
-        for mat in self.subtoken_regex.find_iter(text) {
-            let sub = mat.as_str();
-            let tk = MToken::new(sub.to_string(), "NN".to_string(), " ".to_string());
-            tokens.push(tk);
+
+        for mat in word_boundary_regex.find_iter(text) {
+            let word = mat.as_str();
+            // Apply subtokenization regex to each word (like Python's subtokenize in retokenize)
+            // This handles abbreviations, numbers, etc. but preserves contractions
+            let subtokens: Vec<&str> = self
+                .subtoken_regex
+                .find_iter(word)
+                .map(|m| m.as_str())
+                .collect();
+
+            if subtokens.is_empty() {
+                // If regex doesn't match, use the word as-is
+                let tk = MToken::new(word.to_string(), "NN".to_string(), " ".to_string());
+                tokens.push(tk);
+            } else {
+                for sub in subtokens {
+                    let tk = MToken::new(sub.to_string(), "NN".to_string(), " ".to_string());
+                    tokens.push(tk);
+                }
+            }
         }
+
         tokens
     }
 
@@ -81,21 +107,61 @@ impl G2P {
             tokens.len(),
             tags.len()
         );
+        for (i, tk) in tokens.iter().enumerate() {
+            eprintln!("DEBUG: token[{}]: '{}'", i, tk.text);
+        }
 
-        for (tk, tag) in tokens.iter_mut().zip(tags.into_iter()) {
-            tk.tag = tag.tag;
-            if tk.phonemes.is_none() {
-                let word = tk.text.clone();
-                let tag = tk.tag.clone();
-                eprintln!("DEBUG: processing token '{}' with tag '{}'", word, tag);
+        // Process tokens in reverse order (like Python) to build context
+        let mut contexts: Vec<crate::lexicon::TokenContext> =
+            vec![crate::lexicon::TokenContext::default(); tokens.len()];
 
-                // Try dictionary lookup
-                // Try dictionary lookup
-                if let Some((ps, _)) = self.lexicon.lookup(&word, &tag, None) {
-                    tk.phonemes = Some(ps);
+        // First, set tags
+        for (tk, tag) in tokens.iter_mut().zip(tags.iter()) {
+            tk.tag = tag.tag.clone();
+        }
+
+        // Process in reverse to build context from future tokens
+        for i in (0..tokens.len()).rev() {
+            let word = tokens[i].text.clone();
+            let tag = tokens[i].tag.clone();
+            let stress = if word == word.to_lowercase() {
+                None
+            } else {
+                Some(if word == word.to_uppercase() {
+                    self.lexicon.cap_stresses.1
+                } else {
+                    self.lexicon.cap_stresses.0
+                })
+            };
+
+            // Determine context from next token
+            if i < tokens.len() - 1 {
+                let next_word = &tokens[i + 1].text;
+                // Check if next word starts with vowel (simple heuristic)
+                if let Some(first_char) = next_word.chars().next() {
+                    let first_lower = first_char.to_lowercase().next().unwrap();
+                    if "aeiou".contains(first_lower) {
+                        contexts[i].future_vowel = Some(true);
+                    } else if first_char.is_alphabetic() {
+                        contexts[i].future_vowel = Some(false);
+                    }
                 }
 
-                if tk.phonemes.is_none() {
+                if next_word.to_lowercase() == "to" {
+                    contexts[i].future_to = true;
+                }
+            }
+
+            // Process current token
+            if tokens[i].phonemes.is_none() {
+                let ctx = Some(&contexts[i]);
+
+                // Use get_word which handles special cases, lookup, and stemming
+                if let Some((ps, _)) = self.lexicon.get_word(&word, &tag, stress, ctx) {
+                    tokens[i].phonemes = Some(ps);
+                }
+
+                if tokens[i].phonemes.is_none() {
                     if word.contains('-') && word.len() > 1 {
                         // Handle hyphenated words like "twenty-one"
                         let parts: Vec<&str> = word.split('-').filter(|s| !s.is_empty()).collect();
@@ -104,32 +170,23 @@ impl G2P {
                             let (p, _) = self.g2p(part);
                             sub_ps.push(p);
                         }
-                        tk.phonemes = Some(sub_ps.join(" "));
+                        tokens[i].phonemes = Some(sub_ps.join(" "));
                     } else if self.is_number(&word) {
                         let spoken = self.convert_number(&word);
                         if spoken != word {
                             let (p, _) = self.g2p(&spoken);
-                            tk.phonemes = Some(p);
+                            tokens[i].phonemes = Some(p);
                         }
                     }
                 }
 
-                if tk.phonemes.is_none() {
+                if tokens[i].phonemes.is_none() {
                     if let Some(ps) = self.rules.apply_rules(&word, &tag, &self.lexicon) {
-                        tk.phonemes = Some(ps);
+                        tokens[i].phonemes = Some(ps);
                     }
                 }
 
-                if tk.phonemes.is_none() {
-                    let lower = word.to_lowercase();
-                    if lower != word {
-                        if let Some((ps, _)) = self.lexicon.lookup(&lower, &tag, None) {
-                            tk.phonemes = Some(ps);
-                        }
-                    }
-                }
-
-                if tk.phonemes.is_none() {
+                if tokens[i].phonemes.is_none() {
                     if word.chars().count() > 1 {
                         // Try character-by-character if the whole word is unknown
                         let mut char_ps = Vec::new();
@@ -137,7 +194,7 @@ impl G2P {
                             let (p, _) = self.g2p(&c.to_string());
                             char_ps.push(p);
                         }
-                        tk.phonemes = Some(char_ps.join(" "));
+                        tokens[i].phonemes = Some(char_ps.join(" "));
                     } else {
                         // Try to normalize the character or return unknown
                         let normalized: String = word
@@ -157,20 +214,36 @@ impl G2P {
 
                         if normalized != word {
                             let (p, _) = self.g2p(&normalized);
-                            tk.phonemes = Some(p);
+                            tokens[i].phonemes = Some(p);
                         } else {
                             // Handle standard punctuation and symbols gracefully
                             if word.chars().count() == 1 {
                                 let c = word.chars().next().unwrap();
                                 if c.is_ascii_punctuation() || "—–…".contains(c) {
-                                    tk.phonemes = Some(" ".to_string());
+                                    tokens[i].phonemes = Some(" ".to_string());
                                 } else {
-                                    tk.phonemes = Some(self.unk.clone());
+                                    tokens[i].phonemes = Some(self.unk.clone());
                                 }
                             } else {
-                                tk.phonemes = Some(self.unk.clone());
+                                tokens[i].phonemes = Some(self.unk.clone());
                             }
                         }
+                    }
+                }
+            }
+
+            // Update context for previous tokens based on current phonemes
+            if i > 0 && tokens[i].phonemes.is_some() {
+                let vowels = "AIOQWYaiuæɑɒɔəɛɜɪʊʌᵻ";
+                let consonants = "bdfhjklmnpstvwzðŋɡɹɾʃʒʤʧθ";
+                let phonemes = tokens[i].phonemes.as_ref().unwrap();
+                for c in phonemes.chars() {
+                    if vowels.contains(c) {
+                        contexts[i - 1].future_vowel = Some(true);
+                        break;
+                    } else if consonants.contains(c) {
+                        contexts[i - 1].future_vowel = Some(false);
+                        break;
                     }
                 }
             }

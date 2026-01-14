@@ -3,6 +3,36 @@ use crate::language::Language;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// Constants matching Python implementation
+const LEXICON_ORDS: &[u32] = &[
+    39, 45, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86,
+    87, 88, 89, 90, 91, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111,
+    112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122,
+];
+const US_TAUS: &str = "AIOWYiuæɑəɛɪɹʊʌ";
+
+fn get_add_symbols() -> HashMap<&'static str, &'static str> {
+    let mut m = HashMap::new();
+    m.insert(".", "dot");
+    m.insert("/", "slash");
+    m
+}
+
+fn get_symbols() -> HashMap<&'static str, &'static str> {
+    let mut m = HashMap::new();
+    m.insert("%", "percent");
+    m.insert("&", "and");
+    m.insert("+", "plus");
+    m.insert("@", "at");
+    m
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TokenContext {
+    pub future_vowel: Option<bool>,
+    pub future_to: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum PhonemeEntry {
@@ -65,15 +95,28 @@ impl Lexicon {
     }
 
     // Helper to get phoneme string based on tag from entry
-    fn resolve_phonemes(&self, entry: &PhonemeEntry, tag: &str) -> Option<String> {
+    fn resolve_phonemes(
+        &self,
+        entry: &PhonemeEntry,
+        tag: &str,
+        ctx: Option<&TokenContext>,
+    ) -> Option<String> {
         match entry {
             PhonemeEntry::Simple(ps) => Some(ps.clone()),
             PhonemeEntry::Tagged(map) => {
+                // Python: if ctx and ctx.future_vowel is None and 'None' in ps: tag = 'None'
+                let mut current_tag = tag;
+                if let Some(context) = ctx {
+                    if context.future_vowel.is_none() && map.contains_key("None") {
+                        current_tag = "None";
+                    }
+                }
+
                 // Try specific tag, then parent tag, then DEFAULT
-                if let Some(Some(ps)) = map.get(tag) {
+                if let Some(Some(ps)) = map.get(current_tag) {
                     return Some(ps.clone());
                 }
-                let parent = Lexicon::get_parent_tag(tag);
+                let parent = Lexicon::get_parent_tag(current_tag);
                 if let Some(Some(ps)) = map.get(parent) {
                     return Some(ps.clone());
                 }
@@ -96,7 +139,13 @@ impl Lexicon {
         }
     }
 
-    pub fn lookup(&self, word: &str, tag: &str, stress: Option<f64>) -> Option<(String, i32)> {
+    pub fn lookup(
+        &self,
+        word: &str,
+        tag: &str,
+        stress: Option<f64>,
+        ctx: Option<&TokenContext>,
+    ) -> Option<(String, i32)> {
         let mut current_word = word.to_string();
         let mut is_nnp = false;
 
@@ -108,24 +157,16 @@ impl Lexicon {
         let mut ps = None;
         let mut rating = 0;
 
-        // println!("DEBUG: lookup '{}', dictionary size: {}", word, self.golds.len());
-
-        if let Some(entry) = self
-            .golds
-            .get(&current_word)
-            .or_else(|| self.golds.get(&current_word.to_lowercase()))
-        {
-            ps = self.resolve_phonemes(entry, tag);
+        // Try golds first
+        if let Some(entry) = self.golds.get(&current_word) {
+            ps = self.resolve_phonemes(entry, tag, ctx);
             rating = 4;
         }
 
-        if ps.is_none() {
-            if let Some(entry) = self
-                .silvers
-                .get(&current_word)
-                .or_else(|| self.silvers.get(&current_word.to_lowercase()))
-            {
-                ps = self.resolve_phonemes(entry, tag);
+        // Try silvers only if not NNP (Python behavior)
+        if ps.is_none() && !is_nnp {
+            if let Some(entry) = self.silvers.get(&current_word) {
+                ps = self.resolve_phonemes(entry, tag, ctx);
                 rating = 3;
             }
         }
@@ -246,7 +287,13 @@ impl Lexicon {
     }
 
     // Stemming logic
-    pub fn stem_s(&self, word: &str, tag: &str, stress: Option<f64>) -> Option<(String, i32)> {
+    pub fn stem_s(
+        &self,
+        word: &str,
+        tag: &str,
+        stress: Option<f64>,
+        ctx: Option<&TokenContext>,
+    ) -> Option<(String, i32)> {
         let lower = word.to_lowercase();
         if lower.len() < 3 || !lower.ends_with('s') {
             return None;
@@ -268,7 +315,7 @@ impl Lexicon {
             return None;
         };
 
-        let (stem_ps, rating) = self.lookup(stem, tag, stress)?;
+        let (stem_ps, rating) = self.lookup(stem, tag, stress, ctx)?;
         Some((self.append_s(&stem_ps), rating))
     }
 
@@ -277,16 +324,23 @@ impl Lexicon {
             return String::new();
         }
         let last = stem.chars().last().unwrap();
+        let british = matches!(self.lang, Language::EnglishGB);
         if "ptkfθ".contains(last) {
             format!("{}s", stem)
         } else if "szʃʒʧʤ".contains(last) {
-            format!("{}iz", stem) // Simplified: python uses ɪ or ᵻ
+            format!("{}{}z", stem, if british { "ɪ" } else { "ᵻ" })
         } else {
             format!("{}z", stem)
         }
     }
 
-    pub fn stem_ed(&self, word: &str, tag: &str, stress: Option<f64>) -> Option<(String, i32)> {
+    pub fn stem_ed(
+        &self,
+        word: &str,
+        tag: &str,
+        stress: Option<f64>,
+        ctx: Option<&TokenContext>,
+    ) -> Option<(String, i32)> {
         let lower = word.to_lowercase();
         if lower.len() < 4 || !lower.ends_with('d') {
             return None;
@@ -303,7 +357,7 @@ impl Lexicon {
             return None;
         };
 
-        let (stem_ps, rating) = self.lookup(stem, tag, stress)?;
+        let (stem_ps, rating) = self.lookup(stem, tag, stress, ctx)?;
         Some((self.append_ed(&stem_ps), rating))
     }
 
@@ -311,19 +365,67 @@ impl Lexicon {
         if stem.is_empty() {
             return String::new();
         }
+        let british = matches!(self.lang, Language::EnglishGB);
         let last = stem.chars().last().unwrap();
         if "pkfθʃsʧ".contains(last) {
             format!("{}t", stem)
         } else if last == 'd' {
-            format!("{}id", stem)
+            format!("{}{}d", stem, if british { "ɪ" } else { "ᵻ" })
         } else if last != 't' {
             format!("{}d", stem)
+        } else if british || stem.len() < 2 {
+            format!("{}ɪd", stem)
         } else {
-            format!("{}id", stem)
+            // Check if second-to-last char is in US_TAUS
+            let chars: Vec<char> = stem.chars().collect();
+            if chars.len() >= 2 && US_TAUS.contains(chars[chars.len() - 2]) {
+                format!(
+                    "{}ɾᵻd",
+                    &stem[..stem.len() - chars[chars.len() - 1].len_utf8()]
+                )
+            } else {
+                format!("{}ᵻd", stem)
+            }
         }
     }
 
-    pub fn stem_ing(&self, word: &str, tag: &str, stress: Option<f64>) -> Option<(String, i32)> {
+    pub fn append_ing(&self, stem: &str) -> Option<String> {
+        if stem.is_empty() {
+            return None;
+        }
+        let british = matches!(self.lang, Language::EnglishGB);
+
+        if british {
+            let last = stem.chars().last().unwrap();
+            if last == 'ə' || last == 'ː' {
+                return None;
+            }
+        }
+
+        // US: check for 't' followed by US_TAUS vowel
+        if !british && stem.len() > 1 {
+            let chars: Vec<char> = stem.chars().collect();
+            if chars[chars.len() - 1] == 't'
+                && chars.len() >= 2
+                && US_TAUS.contains(chars[chars.len() - 2])
+            {
+                return Some(format!(
+                    "{}ɾɪŋ",
+                    &stem[..stem.len() - chars[chars.len() - 1].len_utf8()]
+                ));
+            }
+        }
+
+        Some(format!("{}ɪŋ", stem))
+    }
+
+    pub fn stem_ing(
+        &self,
+        word: &str,
+        tag: &str,
+        stress: Option<f64>,
+        ctx: Option<&TokenContext>,
+    ) -> Option<(String, i32)> {
         let lower = word.to_lowercase();
         if lower.len() < 5 || !lower.ends_with("ing") {
             return None;
@@ -333,19 +435,242 @@ impl Lexicon {
             lower[..lower.len() - 3].to_string()
         } else if self.is_known(&(lower[..lower.len() - 3].to_string() + "e"), tag) {
             lower[..lower.len() - 3].to_string() + "e"
-        } else if lower.len() > 5 && self.is_known(&lower[..lower.len() - 4], tag) {
-            // Simplified: python regex checks for doubled consonants
-            lower[..lower.len() - 4].to_string()
+        } else if lower.len() > 5 {
+            // Python regex: r'([bcdgklmnprstvxz])\1ing$|cking$'
+            let stem_candidate = &lower[..lower.len() - 4];
+            if self.is_known(stem_candidate, tag) {
+                // Check for doubled consonants or 'ck'
+                let chars: Vec<char> = stem_candidate.chars().collect();
+                if chars.len() >= 2 {
+                    let last = chars[chars.len() - 1];
+                    let second_last = chars[chars.len() - 2];
+                    if (last == second_last && "bcdgklmnprstvxz".contains(last))
+                        || (last == 'k' && second_last == 'c')
+                    {
+                        return Some((
+                            self.append_ing(stem_candidate)?,
+                            self.lookup(stem_candidate, tag, stress, ctx)?.1,
+                        ));
+                    }
+                }
+            }
+            return None;
         } else {
             return None;
         };
 
-        // Note: lookup handles string, so we pass current stem string (which is lowercased).
-        let (stem_ps, rating) = self.lookup(&stem, tag, stress)?;
-        Some((format!("{}ɪŋ", stem_ps), rating))
+        let (stem_ps, rating) = self.lookup(&stem, tag, stress, ctx)?;
+        Some((self.append_ing(&stem_ps)?, rating))
+    }
+
+    pub fn get_special_case(
+        &self,
+        word: &str,
+        tag: &str,
+        stress: Option<f64>,
+        ctx: Option<&TokenContext>,
+    ) -> Option<(String, i32)> {
+        let add_symbols = get_add_symbols();
+        let symbols = get_symbols();
+
+        if tag == "ADD" && add_symbols.contains_key(word) {
+            return self.lookup(add_symbols[word], "NN", Some(-0.5), ctx);
+        } else if symbols.contains_key(word) {
+            return self.lookup(symbols[word], "NN", None, ctx);
+        } else if word.contains('.') && word.replace('.', "").chars().all(|c| c.is_alphabetic()) {
+            let max_len = word.split('.').map(|s| s.len()).max().unwrap_or(0);
+            if max_len < 3 {
+                return self.get_nnp(word);
+            }
+        } else if word == "a" || word == "A" {
+            return Some((
+                if tag == "DT" {
+                    "ɐ".to_string()
+                } else {
+                    "ˈA".to_string()
+                },
+                4,
+            ));
+        } else if word == "am" || word == "Am" || word == "AM" {
+            if tag.starts_with("NN") {
+                return self.get_nnp(word);
+            } else if ctx.is_none()
+                || ctx.and_then(|c| c.future_vowel).is_none()
+                || word != "am"
+                || stress.map(|s| s > 0.0).unwrap_or(false)
+            {
+                if let Some(PhonemeEntry::Simple(ps)) = self.golds.get("am") {
+                    return Some((ps.clone(), 4));
+                }
+            }
+            return Some(("ɐm".to_string(), 4));
+        } else if word == "an" || word == "An" || word == "AN" {
+            if word == "AN" && tag.starts_with("NN") {
+                return self.get_nnp(word);
+            }
+            return Some(("ɐn".to_string(), 4));
+        } else if word == "I" && tag == "PRP" {
+            return Some(("ˌI".to_string(), 4));
+        } else if (word == "by" || word == "By" || word == "BY")
+            && Lexicon::get_parent_tag(tag) == "ADV"
+        {
+            return Some(("bˈI".to_string(), 4));
+        } else if word == "to" || word == "To" || (word == "TO" && (tag == "TO" || tag == "IN")) {
+            let future_vowel = ctx.and_then(|c| c.future_vowel);
+            if let Some(PhonemeEntry::Simple(ps)) = self.golds.get("to") {
+                return Some((
+                    match future_vowel {
+                        None => ps.clone(),
+                        Some(false) => "tə".to_string(),
+                        Some(true) => "tʊ".to_string(),
+                    },
+                    4,
+                ));
+            }
+        } else if word == "in" || word == "In" || (word == "IN" && tag != "NNP") {
+            let future_vowel = ctx.and_then(|c| c.future_vowel);
+            let stress_mark = if future_vowel.is_none() || tag != "IN" {
+                "ˈ"
+            } else {
+                ""
+            };
+            return Some((format!("{}{}", stress_mark, "ɪn"), 4));
+        } else if word == "the" || word == "The" || (word == "THE" && tag == "DT") {
+            let future_vowel = ctx.and_then(|c| c.future_vowel);
+            return Some((
+                if future_vowel == Some(true) {
+                    "ði".to_string()
+                } else {
+                    "ðə".to_string()
+                },
+                4,
+            ));
+        } else if tag == "IN" && (word.to_lowercase() == "vs" || word.to_lowercase() == "vs.") {
+            return self.lookup("versus", "NN", None, ctx);
+        } else if word == "used" || word == "Used" || word == "USED" {
+            if (tag == "VBD" || tag == "JJ") && ctx.map(|c| c.future_to).unwrap_or(false) {
+                if let Some(PhonemeEntry::Tagged(map)) = self.golds.get("used") {
+                    if let Some(Some(ps)) = map.get("VBD") {
+                        return Some((ps.clone(), 4));
+                    }
+                }
+            }
+            if let Some(PhonemeEntry::Tagged(map)) = self.golds.get("used") {
+                if let Some(Some(ps)) = map.get("DEFAULT") {
+                    return Some((ps.clone(), 4));
+                }
+            }
+        }
+        None
     }
 
     pub fn is_known(&self, word: &str, _tag: &str) -> bool {
-        self.golds.contains_key(word) || self.silvers.contains_key(word) || word.len() == 1
+        let symbols = get_symbols();
+
+        if self.golds.contains_key(word)
+            || symbols.contains_key(word)
+            || self.silvers.contains_key(word)
+        {
+            return true;
+        }
+
+        if !word.chars().all(|c| c.is_alphabetic()) {
+            return false;
+        }
+
+        if !word.chars().all(|c| {
+            let ord = c as u32;
+            LEXICON_ORDS.contains(&ord)
+        }) {
+            return false;
+        }
+
+        if word.len() == 1 {
+            return true;
+        }
+
+        if word == word.to_uppercase() && self.golds.contains_key(&word.to_lowercase()) {
+            return true;
+        }
+
+        // Check for mixed case like "iPhone" (word[1:] == word[1:].upper())
+        if word.len() > 1 {
+            let rest: String = word.chars().skip(1).collect();
+            if rest == rest.to_uppercase() {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn get_word(
+        &self,
+        word: &str,
+        tag: &str,
+        stress: Option<f64>,
+        ctx: Option<&TokenContext>,
+    ) -> Option<(String, i32)> {
+        // First try special cases
+        if let Some(result) = self.get_special_case(word, tag, stress, ctx) {
+            return Some(result);
+        }
+
+        let wl = word.to_lowercase();
+        let mut current_word = word;
+
+        // Python logic: convert to lowercase if conditions met
+        if word.len() > 1
+            && word.replace("'", "").chars().all(|c| c.is_alphabetic())
+            && word != wl
+            && (tag != "NNP" || word.len() > 7)
+            && !self.golds.contains_key(word)
+            && !self.silvers.contains_key(word)
+            && (word == word.to_uppercase() || {
+                let rest: String = word.chars().skip(1).collect();
+                rest == rest.to_lowercase()
+            })
+            && (self.golds.contains_key(&wl)
+                || self.silvers.contains_key(&wl)
+                || self.stem_s(&wl, tag, stress, ctx).is_some()
+                || self.stem_ed(&wl, tag, stress, ctx).is_some()
+                || self.stem_ing(&wl, tag, stress, ctx).is_some())
+        {
+            current_word = &wl;
+        }
+
+        if self.is_known(current_word, tag) {
+            return self.lookup(current_word, tag, stress, ctx);
+        }
+
+        // Handle possessive forms
+        if current_word.ends_with("s'")
+            && self.is_known(&current_word[..current_word.len() - 2], tag)
+        {
+            return self.lookup(
+                &format!("{}'s", &current_word[..current_word.len() - 2]),
+                tag,
+                stress,
+                ctx,
+            );
+        }
+        if current_word.ends_with("'")
+            && self.is_known(&current_word[..current_word.len() - 1], tag)
+        {
+            return self.lookup(&current_word[..current_word.len() - 1], tag, stress, ctx);
+        }
+
+        // Try stemming
+        if let Some(result) = self.stem_s(current_word, tag, stress, ctx) {
+            return Some(result);
+        }
+        if let Some(result) = self.stem_ed(current_word, tag, stress, ctx) {
+            return Some(result);
+        }
+        if let Some(result) = self.stem_ing(current_word, tag, Some(0.5).or(stress), ctx) {
+            return Some(result);
+        }
+
+        None
     }
 }
