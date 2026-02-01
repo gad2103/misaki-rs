@@ -45,7 +45,7 @@ impl G2P {
         let fallback: Option<Box<dyn Fallback>> = match EspeakFallback::new(lang == Language::EnglishGB) {
             Ok(fb) => Some(Box::new(fb)),
             Err(e) => {
-                eprintln!("Warning: espeak-ng fallback unavailable: {}", e);
+                tracing::warn!("espeak-ng fallback unavailable: {}", e);
                 None
             }
         };
@@ -112,14 +112,14 @@ impl G2P {
         let words: Vec<&str> = words_owned.iter().map(|s| s.as_str()).collect();
         let tags = self.tagger.tag(&words);
 
-        eprintln!(
-            "DEBUG: g2p '{}' -> {} tokens, {} tags",
+        tracing::debug!(
+            "g2p '{}' -> {} tokens, {} tags",
             text,
             tokens.len(),
             tags.len()
         );
         for (i, tk) in tokens.iter().enumerate() {
-            eprintln!("DEBUG: token[{}]: '{}'", i, tk.text);
+            tracing::debug!("token[{}]: '{}'", i, tk.text);
         }
 
         // Process tokens in reverse order (like Python) to build context

@@ -22,12 +22,13 @@ impl EspeakFallback {
 impl Fallback for EspeakFallback {
     fn phonemize(&self, word: &str) -> (String, u8) {
         use espeakng::{initialise, PhonemeGenOptions, PhonemeMode, TextMode};
+        use tracing::error;
 
         // Initialize espeak (idempotent - safe to call multiple times)
         let speaker_mutex = match initialise(None) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("espeak init error: {:?}", e);
+                error!("espeak init error: {:?}", e);
                 // Return word as-is if espeak unavailable
                 return (word.to_string(), 0);
             }
@@ -43,7 +44,7 @@ impl Fallback for EspeakFallback {
         };
 
         if let Err(e) = speaker.set_voice_raw(voice) {
-            eprintln!("espeak set_voice error for '{}': {:?}", voice, e);
+            error!("espeak set_voice error for '{}': {:?}", voice, e);
             // Continue anyway, it will use default voice
         }
 
@@ -67,7 +68,7 @@ impl Fallback for EspeakFallback {
             }
             Err(e) => {
                 // Should never happen with valid espeak installation
-                eprintln!("Unexpected espeak error for '{}': {:?}", word, e);
+                error!("Unexpected espeak error for '{}': {:?}", word, e);
                 // Return word as-is as last resort
                 (word.to_string(), 0)
             }
