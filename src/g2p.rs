@@ -1,4 +1,5 @@
 use crate::language::Language;
+use crate::fallback::{Fallback, EspeakFallback};
 use crate::languages::{LanguageRules, english::English};
 use crate::lexicon::Lexicon;
 use crate::tagger::PerceptronTagger;
@@ -13,6 +14,7 @@ pub struct G2P {
     subtoken_regex: Regex,
     tagger: PerceptronTagger,
     rules: Box<dyn LanguageRules>,
+    fallback: Option<Box<dyn Fallback>>,
 }
 
 impl G2P {
@@ -40,12 +42,21 @@ impl G2P {
             // Language::Italian => Box::new(Italian),
         };
 
+        let fallback: Option<Box<dyn Fallback>> = match EspeakFallback::new(lang == Language::EnglishGB) {
+            Ok(fb) => Some(Box::new(fb)),
+            Err(e) => {
+                tracing::warn!("espeak-ng fallback unavailable: {}", e);
+                None
+            }
+        };
+
         Self {
             lexicon: Lexicon::new(lang),
             unk: "❓".to_string(),
             subtoken_regex,
             tagger: PerceptronTagger::new(weights_json, classes_txt, tags_json),
             rules,
+            fallback,
         }
     }
 
@@ -101,14 +112,14 @@ impl G2P {
         let words: Vec<&str> = words_owned.iter().map(|s| s.as_str()).collect();
         let tags = self.tagger.tag(&words);
 
-        eprintln!(
-            "DEBUG: g2p '{}' -> {} tokens, {} tags",
+        tracing::debug!(
+            "g2p '{}' -> {} tokens, {} tags",
             text,
             tokens.len(),
             tags.len()
         );
         for (i, tk) in tokens.iter().enumerate() {
-            eprintln!("DEBUG: token[{}]: '{}'", i, tk.text);
+            tracing::debug!("token[{}]: '{}'", i, tk.text);
         }
 
         // Process tokens in reverse order (like Python) to build context
@@ -188,13 +199,19 @@ impl G2P {
 
                 if tokens[i].phonemes.is_none() {
                     if word.chars().count() > 1 {
-                        // Try character-by-character if the whole word is unknown
-                        let mut char_ps = Vec::new();
-                        for c in word.chars() {
-                            let (p, _) = self.g2p(&c.to_string());
-                            char_ps.push(p);
+                        // Unknown multi-character word - use fallback
+                        if let Some(ref fallback) = self.fallback {
+                            let (ps, _) = fallback.phonemize(&word);
+                            tokens[i].phonemes = Some(ps);
+                        } else {
+                            // No fallback available, try character-by-character
+                            let mut char_ps = Vec::new();
+                            for c in word.chars() {
+                                let (p, _) = self.g2p(&c.to_string());
+                                char_ps.push(p);
+                            }
+                            tokens[i].phonemes = Some(char_ps.join(" "));
                         }
-                        tokens[i].phonemes = Some(char_ps.join(" "));
                     } else {
                         // Try to normalize the character or return unknown
                         let normalized: String = word
