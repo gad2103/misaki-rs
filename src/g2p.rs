@@ -200,11 +200,21 @@ impl G2P {
                 if tokens[i].phonemes.is_none() {
                     if word.chars().count() > 1 {
                         // Unknown multi-character word - use fallback
+                        let mut handled = false;
                         if let Some(ref fallback) = self.fallback {
-                            let (ps, _) = fallback.phonemize(&word);
-                            tokens[i].phonemes = Some(ps);
-                        } else {
-                            // No fallback available, try character-by-character
+                            match fallback.phonemize(&word) {
+                                Ok((ps, _)) => {
+                                    tokens[i].phonemes = Some(ps);
+                                    handled = true;
+                                }
+                                Err(e) => {
+                                    tracing::error!("fallback error: {}", e);
+                                }
+                            }
+                        }
+
+                        if !handled {
+                            // No fallback available or failed, try character-by-character
                             let mut char_ps = Vec::new();
                             for c in word.chars() {
                                 let (p, _) = self.g2p(&c.to_string());
