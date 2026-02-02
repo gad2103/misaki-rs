@@ -1,9 +1,30 @@
+use espeak_rs::text_to_phonemes;
+use std::sync::Mutex;
+use thiserror::Error;
+
+static ESPEAK_MUTEX: Mutex<()> = Mutex::new(());
+
+#[derive(Error, Debug)]
+pub enum FallbackError {
+    #[error("espeak error for '{word}': {error}")]
+    Espeak {
+        word: String,
+        error: String,
+    },
+    #[error("no phonemes matched for '{word}'")]
+    NoPhonemes {
+        word: String,
+    },
+    #[error("mutex poisoned: {0}")]
+    MutexPoisoned(String),
+}
+
 /// Trait for OOV (out-of-vocabulary) word fallback mechanisms
 pub trait Fallback: Send + Sync {
     /// Convert unknown word to phonemes
-    /// Returns (phonemes, rating) tuple
+    /// Returns phonemes
     /// Note: espeak-ng is rule-based and always produces output
-    fn phonemize(&self, word: &str) -> (String, u8);
+    fn phonemize(&self, word: &str) -> Result<String, FallbackError>;
 }
 
 /// espeak-ng based fallback
@@ -13,123 +34,49 @@ pub struct EspeakFallback {
 
 impl EspeakFallback {
     pub fn new(british: bool) -> Result<Self, String> {
-        // Initialize espeak-ng
-        // espeak-ng uses IPA output by default which matches misaki
         Ok(Self { british })
+    }
+
+    /// Convert espeak IPA output to misaki phoneme format
+    fn convert_espeak_to_misaki(&self, espeak_ipa: &str) -> String {
+        let mut result = espeak_ipa.to_string();
+
+        // Conversions to match misaki phoneme set
+        result = result.replace("iː", "ˈi").replace("i:", "ˈi");
+        result = result.replace("uː", "ˈu").replace("u:", "ˈu");
+        result = result.replace("ɜː", "ɜ").replace("ɜ:", "ɜ");
+        result = result.replace("ɔː", "ɔ").replace("ɔ:", "ɔ");
+        result = result.replace("ɑː", "ɑ").replace("ɑ:", "ɑ");
+        result = result.replace("ː", ""); // remove remaining length markers
+        result = result.replace("_", ""); // stop syllables
+
+        result.replace("ˈˈ", "ˈ").replace("ˌˌ", "ˌ")
     }
 }
 
 impl Fallback for EspeakFallback {
-    fn phonemize(&self, word: &str) -> (String, u8) {
-        use espeakng::{initialise, PhonemeGenOptions, PhonemeMode, TextMode};
-        use tracing::error;
+    fn phonemize(&self, word: &str) -> Result<String, FallbackError> {
+        let _lock = ESPEAK_MUTEX
+            .lock()
+            .map_err(|e| FallbackError::MutexPoisoned(format!("{:?}", e)))?;
+        let voice = if self.british { "en" } else { "en-us" };
 
-        // Initialize espeak (idempotent - safe to call multiple times)
-        let speaker_mutex = match initialise(None) {
-            Ok(s) => s,
-            Err(e) => {
-                error!("espeak init error: {:?}", e);
-                // Return word as-is if espeak unavailable
-                return (word.to_string(), 0);
+        // Use the portable espeak-rs call (used in kokoros)
+        match text_to_phonemes(word, voice, None, true, false) {
+            Ok(phonemes) => {
+                if phonemes.is_empty() {
+                    return Err(FallbackError::NoPhonemes {
+                        word: word.to_string(),
+                    });
+                }
+                let cleaned = self.convert_espeak_to_misaki(&phonemes.join(""));
+                Ok(cleaned)
             }
-        };
-
-        let mut speaker = speaker_mutex.lock();
-
-        // Select language variant
-        let voice = if self.british {
-            "en"
-        } else {
-            "en-us"
-        };
-
-        if let Err(e) = speaker.set_voice_raw(voice) {
-            error!("espeak set_voice error for '{}': {:?}", voice, e);
-            // Continue anyway, it will use default voice
+            Err(e) => Err(FallbackError::Espeak {
+                word: word.to_string(),
+                error: format!("{:?}", e),
+            }),
         }
-
-        // Convert to phonemes using espeak
-        // espeak is rule-based and ALWAYS produces output
-        let options = PhonemeGenOptions::Standard {
-            text_mode: TextMode::Utf8,
-            // In espeak-ng, value 2 (bit 1) is IPA.
-            // In the espeakng crate, bit 1 is named IncludeZeroWidthJoiners.
-            phoneme_mode: PhonemeMode::IncludeZeroWidthJoiners,
-        };
-
-        match speaker.text_to_phonemes(word, options) {
-            Ok(Some(phonemes)) => {
-                // Clean up phonemes to match misaki format
-                let cleaned = self.convert_espeak_to_misaki(&phonemes);
-                (cleaned, 1)  // rating=1 for fallback
-            },
-            Ok(None) => {
-                (word.to_string(), 0)
-            }
-            Err(e) => {
-                // Should never happen with valid espeak installation
-                error!("Unexpected espeak error for '{}': {:?}", word, e);
-                // Return word as-is as last resort
-                (word.to_string(), 0)
-            }
-        }
-    }
-}
-
-impl EspeakFallback {
-    /// Convert espeak IPA output to misaki phoneme format
-    fn convert_espeak_to_misaki(&self, espeak_ipa: &str) -> String {
-        // espeak outputs IPA, misaki uses similar but slightly different symbols
-        // Map espeak's IPA to misaki's phoneme set
-
-        let mut result = espeak_ipa.to_string();
-
-        // Common conversions (based on misaki phoneme set):
-        // espeak uses standard IPA, misaki uses custom symbols
-
-        // Vowels
-        result = result.replace("ɪ", "ɪ");  // same
-        result = result.replace("iː", "ˈi");  // long i -> stressed i
-        result = result.replace("i:", "ˈi");
-        result = result.replace("ʊ", "ʊ");  // same
-        result = result.replace("uː", "ˈu");  // long u -> stressed u
-        result = result.replace("u:", "ˈu");
-        result = result.replace("ɛ", "ɛ");  // same
-        result = result.replace("ə", "ə");  // schwa - same
-        result = result.replace("ɜː", "ɜ");  // remove length marker
-        result = result.replace("ɜ:", "ɜ");
-        result = result.replace("ɔː", "ɔ");  // remove length marker
-        result = result.replace("ɔ:", "ɔ");
-        result = result.replace("æ", "æ");  // same
-        result = result.replace("ʌ", "ʌ");  // same
-        result = result.replace("ɑː", "ɑ");  // remove length marker
-        result = result.replace("ɑ:", "ɑ");
-
-        // Consonants (mostly same in espeak and misaki)
-        result = result.replace("ŋ", "ŋ");  // ng
-        result = result.replace("ʃ", "ʃ");  // sh
-        result = result.replace("ʒ", "ʒ");  // zh
-        result = result.replace("θ", "θ");  // th (thin)
-        result = result.replace("ð", "ð");  // th (this)
-        result = result.replace("ɹ", "ɹ");  // r
-        result = result.replace("ʤ", "ʤ");  // j (judge)
-        result = result.replace("ʧ", "ʧ");  // ch
-
-        // Stress markers - espeak uses ' for primary, ˌ for secondary
-        // Keep as-is (matches misaki)
-
-        // Remove espeak-specific markers we don't need
-        result = result.replace("ː", "");  // length marker
-        result = result.replace("_", "");  // syllable boundaries
-
-        // Final cleanup: remove duplicate stress markers that might have been
-        // introduced by our mappings if espeak already had a stress marker
-        result = result.replace("ˈˈ", "ˈ");
-        result = result.replace("ˌˌ", "ˌ");
-        result = result.replace("ˈˌ", "ˈ");
-        result = result.replace("ˌˈ", "ˌ");
-
-        result
     }
 }
 
@@ -142,9 +89,8 @@ mod tests {
         let fallback = EspeakFallback::new(false).expect("espeak should initialize");
 
         // Test unknown word - espeak ALWAYS returns something
-        let (phonemes, rating) = fallback.phonemize("ilili");
+        let phonemes = fallback.phonemize("ilili").unwrap();
         assert!(!phonemes.is_empty());
-        assert_eq!(rating, 1);  // fallback rating
 
         // Verify it doesn't spell out character-by-character
         assert!(!phonemes.contains("ˈɛl"));  // Should not have spelled-out 'L'
@@ -155,16 +101,20 @@ mod tests {
         let fallback = EspeakFallback::new(false).unwrap();
 
         // espeak handles even nonsense words
-        let (phonemes, _) = fallback.phonemize("xyzqwop");
+        let phonemes = fallback.phonemize("xyzqwop").unwrap();
         assert!(!phonemes.is_empty(), "espeak should phonemize nonsense words");
     }
 
     #[test]
     fn test_espeak_phonemes_beat() {
         let fallback = EspeakFallback::new(false).unwrap();
-        let (phonemes, _) = fallback.phonemize("beat");
+        let phonemes = fallback.phonemize("beat").unwrap();
         // Misaki for beat should probably be bˈit or similar
-        assert!(phonemes.contains("ˈi"), "Should contain stressed i, got: {}", phonemes);
+        assert!(
+            phonemes.contains("ˈi"),
+            "Should contain stressed i, got: {}",
+            phonemes
+        );
     }
 
     #[test]
@@ -173,8 +123,8 @@ mod tests {
         let gb = EspeakFallback::new(true).unwrap();
 
         // Test word with different pronunciations
-        let (us_phonemes, _) = us.phonemize("schedule");
-        let (gb_phonemes, _) = gb.phonemize("schedule");
+        let us_phonemes = us.phonemize("schedule").unwrap();
+        let gb_phonemes = gb.phonemize("schedule").unwrap();
 
         assert!(!us_phonemes.is_empty());
         assert!(!gb_phonemes.is_empty());

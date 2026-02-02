@@ -4,7 +4,7 @@ fn main() {
     // Test that unknown words use espeak fallback
     let test_unknown = "ilili xyzabc fantabulous";
     let g2p = G2P::new(Language::EnglishUS);
-    let (phonemes, _) = g2p.g2p(test_unknown);
+    let (phonemes, _) = g2p.g2p(test_unknown).unwrap();
 
     println!("Unknown words test: {}", phonemes);
 
