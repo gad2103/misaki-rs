@@ -18,3 +18,4 @@ language-tokenizer = { version = "0.1", features = ["snowball"] }
 espeak-rs = "0.1.9"
 espeakng-sys = { version = "0.2.0", features = ["clang-runtime"] }
 tracing = "0.1"
+thiserror = "2.0"

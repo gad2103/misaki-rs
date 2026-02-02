@@ -339,6 +339,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "thiserror",
  "tracing",
 ]
 

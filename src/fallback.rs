@@ -1,14 +1,30 @@
 use espeak_rs::text_to_phonemes;
 use std::sync::Mutex;
+use thiserror::Error;
 
 static ESPEAK_MUTEX: Mutex<()> = Mutex::new(());
+
+#[derive(Error, Debug)]
+pub enum FallbackError {
+    #[error("espeak error for '{word}': {error}")]
+    Espeak {
+        word: String,
+        error: String,
+    },
+    #[error("no phonemes matched for '{word}'")]
+    NoPhonemes {
+        word: String,
+    },
+    #[error("mutex poisoned: {0}")]
+    MutexPoisoned(String),
+}
 
 /// Trait for OOV (out-of-vocabulary) word fallback mechanisms
 pub trait Fallback: Send + Sync {
     /// Convert unknown word to phonemes
-    /// Returns (phonemes, rating) tuple
+    /// Returns phonemes
     /// Note: espeak-ng is rule-based and always produces output
-    fn phonemize(&self, word: &str) -> Result<(String, u8), String>;
+    fn phonemize(&self, word: &str) -> Result<String, FallbackError>;
 }
 
 /// espeak-ng based fallback
@@ -39,20 +55,27 @@ impl EspeakFallback {
 }
 
 impl Fallback for EspeakFallback {
-    fn phonemize(&self, word: &str) -> Result<(String, u8), String> {
-        let _lock = ESPEAK_MUTEX.lock().map_err(|e| format!("mutex poisoned: {:?}", e))?;
+    fn phonemize(&self, word: &str) -> Result<String, FallbackError> {
+        let _lock = ESPEAK_MUTEX
+            .lock()
+            .map_err(|e| FallbackError::MutexPoisoned(format!("{:?}", e)))?;
         let voice = if self.british { "en" } else { "en-us" };
 
         // Use the portable espeak-rs call (used in kokoros)
         match text_to_phonemes(word, voice, None, true, false) {
             Ok(phonemes) => {
                 if phonemes.is_empty() {
-                    return Ok((word.to_string(), 0));
+                    return Err(FallbackError::NoPhonemes {
+                        word: word.to_string(),
+                    });
                 }
                 let cleaned = self.convert_espeak_to_misaki(&phonemes.join(""));
-                Ok((cleaned, 1))
+                Ok(cleaned)
             }
-            Err(e) => Err(format!("espeak error for '{}': {:?}", word, e)),
+            Err(e) => Err(FallbackError::Espeak {
+                word: word.to_string(),
+                error: format!("{:?}", e),
+            }),
         }
     }
 }
@@ -66,9 +89,8 @@ mod tests {
         let fallback = EspeakFallback::new(false).expect("espeak should initialize");
 
         // Test unknown word - espeak ALWAYS returns something
-        let (phonemes, rating) = fallback.phonemize("ilili").unwrap();
+        let phonemes = fallback.phonemize("ilili").unwrap();
         assert!(!phonemes.is_empty());
-        assert_eq!(rating, 1);  // fallback rating
 
         // Verify it doesn't spell out character-by-character
         assert!(!phonemes.contains("ˈɛl"));  // Should not have spelled-out 'L'
@@ -79,16 +101,20 @@ mod tests {
         let fallback = EspeakFallback::new(false).unwrap();
 
         // espeak handles even nonsense words
-        let (phonemes, _) = fallback.phonemize("xyzqwop").unwrap();
+        let phonemes = fallback.phonemize("xyzqwop").unwrap();
         assert!(!phonemes.is_empty(), "espeak should phonemize nonsense words");
     }
 
     #[test]
     fn test_espeak_phonemes_beat() {
         let fallback = EspeakFallback::new(false).unwrap();
-        let (phonemes, _) = fallback.phonemize("beat").unwrap();
+        let phonemes = fallback.phonemize("beat").unwrap();
         // Misaki for beat should probably be bˈit or similar
-        assert!(phonemes.contains("ˈi"), "Should contain stressed i, got: {}", phonemes);
+        assert!(
+            phonemes.contains("ˈi"),
+            "Should contain stressed i, got: {}",
+            phonemes
+        );
     }
 
     #[test]
@@ -97,8 +123,8 @@ mod tests {
         let gb = EspeakFallback::new(true).unwrap();
 
         // Test word with different pronunciations
-        let (us_phonemes, _) = us.phonemize("schedule").unwrap();
-        let (gb_phonemes, _) = gb.phonemize("schedule").unwrap();
+        let us_phonemes = us.phonemize("schedule").unwrap();
+        let gb_phonemes = gb.phonemize("schedule").unwrap();
 
         assert!(!us_phonemes.is_empty());
         assert!(!gb_phonemes.is_empty());
